@@ -86,6 +86,8 @@ const helpText = `*Bot commands*
 /gemma <question>
 /ling <question>
 /inkling <question>
+/nemotron <question>
+/ai <question> - tries several free models
 *Other*
 /time - current time
 /music <song> - search links for a song
@@ -102,7 +104,7 @@ async function askAI(model, keyName, question) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model,
+      ...(Array.isArray(model) ? { models: model } : { model }),
       max_tokens: 1000,
       messages: [
         {
@@ -140,13 +142,30 @@ async function handle(sock, msg) {
   switch (cmd) {
   case "/gemma":
     case "/ling":
-    case "/inkling": {
+    case "/inkling":
+    case "/ernie":
+    case "/lfm":
+    case "/dots":
+    case "/nemotron":
+    case "/ai": {
       const q = args.join(" ");
       if (!q) return reply(`Usage: ${cmd} <your question>`);
       const cfg = {
         "/gemma": ["google/gemma-4-26b-a4b-it", "GEMMA_KEY"],
         "/ling": ["inclusionai/ling-3.2-flash:free", "LING_KEY"],
         "/inkling": ["thinkingmachines/inkling", "INKLING_KEY"],
+        "/ernie": ["baidu/ernie-5.5-flash-preview:free", "LING_KEY"],
+        "/lfm": ["liquid/lfm-3-1.7b:free", "LING_KEY"],
+        "/dots": ["dots-studio/dots-3-note-preview:free", "LING_KEY"],
+        "/nemotron": ["nvidia/nemotron-3-ultra-550b-a55b:free", "LING_KEY"],
+        "/ai": [
+          [
+            "baidu/ernie-5.5-flash-preview:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "openrouter/free",
+          ],
+          "LING_KEY",
+        ],
       }[cmd];
       try {
         return reply(await askAI(cfg[0], cfg[1], q));
