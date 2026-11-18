@@ -82,13 +82,44 @@ const helpText = `*Bot commands*
 /groupinfo - group details
 /admins - list admins
 /rules - group rules
-
+*AI*
+/gemma <question>
+/ling <question>
+/inkling <question>
 *Other*
 /time - current time
 /music <song> - search links for a song
 /ping - check the bot is alive
 /hello - say hello`;
-
+async function askAI(model, keyName, question) {
+  const key = process.env[keyName];
+  if (!key) return "This AI isn't set up yet.";
+  const fullKey = key.startsWith("sk-or-v1-") ? key : "sk-or-v1-" + key;
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${fullKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1000,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful WhatsApp bot. Keep answers short and plain, with no tables.",
+        },
+        { role: "user", content: question },
+      ],
+    }),
+    signal: AbortSignal.timeout(60000),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+  const out = data.choices?.[0]?.message?.content?.trim();
+  return out ? out.slice(0, 3500) : "The AI sent an empty answer. Try again.";
+}
 const guessGames = new Map();
 const triviaGames = new Map();
 
@@ -107,6 +138,23 @@ async function handle(sock, msg) {
   const reply = (t) => sock.sendMessage(jid, { text: t }, { quoted: msg });
 
   switch (cmd) {
+  case "/gemma":
+    case "/ling":
+    case "/inkling": {
+      const q = args.join(" ");
+      if (!q) return reply(`Usage: ${cmd} <your question>`);
+      const cfg = {
+        "/gemma": ["google/gemma-4-26b-a4b-it", "GEMMA_KEY"],
+        "/ling": ["inclusionai/ling-3.2-flash:free", "LING_KEY"],
+        "/inkling": ["thinkingmachines/inkling", "INKLING_KEY"],
+      }[cmd];
+      try {
+        return reply(await askAI(cfg[0], cfg[1], q));
+      } catch (e) {
+        console.error("AI error:", e.message);
+        return reply("AI request failed. Try again later.");
+      }
+    }  
     case "/hello":
       return reply("Hello!");
     case "/ping":
