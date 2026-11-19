@@ -101,6 +101,11 @@ const helpText = `*Bot commands*
 *Tools*
 /weather <city>
 /translate <language> <text>
+*Flags*
+/flag - start a flag round
+/fa <country> - answer
+/flagskip - reveal and skip
+/flagscore - leaderboard
 *Other*
 /time - current time
 /music <song> - search links for a song
@@ -200,6 +205,49 @@ const tttBotMove = (b) => {
   }
   if (free.includes(4)) return 4;
   return pick(free);
+};
+const flagCountries = [
+  ["BD", "Bangladesh"], ["IN", "India"], ["PK", "Pakistan"],
+  ["LK", "Sri Lanka"], ["NP", "Nepal"], ["BT", "Bhutan"],
+  ["MV", "Maldives"], ["AF", "Afghanistan"], ["CN", "China"],
+  ["JP", "Japan"], ["KR", "South Korea", "Korea"], ["KP", "North Korea"],
+  ["TH", "Thailand"], ["VN", "Vietnam"], ["ID", "Indonesia"],
+  ["MY", "Malaysia"], ["SG", "Singapore"], ["PH", "Philippines"],
+  ["MM", "Myanmar", "Burma"], ["SA", "Saudi Arabia"],
+  ["AE", "United Arab Emirates", "UAE"], ["QA", "Qatar"],
+  ["KW", "Kuwait"], ["TR", "Turkey", "Turkiye"], ["IR", "Iran"],
+  ["IQ", "Iraq"], ["EG", "Egypt"], ["ZA", "South Africa"],
+  ["NG", "Nigeria"], ["KE", "Kenya"], ["ET", "Ethiopia"],
+  ["GH", "Ghana"], ["MA", "Morocco"], ["DZ", "Algeria"],
+  ["GB", "United Kingdom", "UK", "Britain", "Great Britain", "England"],
+  ["FR", "France"], ["DE", "Germany"], ["IT", "Italy"],
+  ["ES", "Spain"], ["PT", "Portugal"], ["NL", "Netherlands", "Holland"],
+  ["BE", "Belgium"], ["CH", "Switzerland"], ["SE", "Sweden"],
+  ["NO", "Norway"], ["DK", "Denmark"], ["FI", "Finland"],
+  ["PL", "Poland"], ["GR", "Greece"], ["RU", "Russia"],
+  ["UA", "Ukraine"], ["IE", "Ireland"], ["AT", "Austria"],
+  ["US", "United States", "USA", "America", "United States of America"],
+  ["CA", "Canada"], ["MX", "Mexico"], ["BR", "Brazil"],
+  ["AR", "Argentina"], ["CL", "Chile"], ["CO", "Colombia"],
+  ["PE", "Peru"], ["CU", "Cuba"], ["AU", "Australia"],
+  ["NZ", "New Zealand"],
+];
+
+const flagGames = new Map();
+const flagScores = new Map();
+
+const flagNorm = (s) =>
+  s.toLowerCase().replace(/[^a-z]/g, "").replace(/^the/, "");
+
+const flagEmoji = (code) =>
+  String.fromCodePoint(
+    ...[...code.toUpperCase()].map((c) => 127397 + c.charCodeAt(0))
+  );
+
+const flagNext = (jid) => {
+  const c = pick(flagCountries);
+  flagGames.set(jid, c);
+  return `${flagEmoji(c[0])}\nWhich country is this flag?\nAnswer with /fa <country>`;
 };
 const guessGames = new Map();
 const triviaGames = new Map();
@@ -375,6 +423,51 @@ async function handle(sock, msg) {
         console.error("AI error:", e.message);
         return reply("Translation failed. Try again later.");
       }
+    }
+    case "/flag":
+      return reply(flagNext(jid));
+    case "/fa": {
+      const g = flagGames.get(jid);
+      if (!g) return reply("No flag game running. Start one with /flag");
+      if (!args.length) return reply("Write your answer, e.g. /fa japan");
+      const given = flagNorm(args.join(" "));
+      if (!g.slice(1).map(flagNorm).includes(given))
+        return reply("❌ Not quite. Try again, or use /flagskip.");
+      const who = msg.key.participant || msg.key.remoteJid;
+      const board = flagScores.get(jid) || new Map();
+      board.set(who, (board.get(who) || 0) + 1);
+      flagScores.set(jid, board);
+      flagGames.delete(jid);
+      return sock.sendMessage(
+        jid,
+        {
+          text: `✅ @${who.split("@")[0]} got it: ${flagEmoji(g[0])} ${g[1]}!\nPoints: ${board.get(who)}\n\nNext flag: /flag`,
+          mentions: [who],
+        },
+        { quoted: msg }
+      );
+    }
+    case "/flagskip": {
+      const g = flagGames.get(jid);
+      if (!g) return reply("No flag game running. Start one with /flag");
+      return reply(`It was ${flagEmoji(g[0])} ${g[1]}.\n\n${flagNext(jid)}`);
+    }
+    case "/flagscore": {
+      const board = flagScores.get(jid);
+      if (!board || !board.size)
+        return reply("No points yet. Start with /flag");
+      const top = [...board.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      const list = top
+        .map(([id, n], i) => `${i + 1}. @${id.split("@")[0]} - ${n}`)
+        .join("\n");
+      return sock.sendMessage(
+        jid,
+        {
+          text: `🏆 *Flag leaderboard*\n${list}`,
+          mentions: top.map(([id]) => id),
+        },
+        { quoted: msg }
+      );
     }
     case "/hello":
       return reply("Hello!");
