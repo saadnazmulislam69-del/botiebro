@@ -88,6 +88,19 @@ const helpText = `*Bot commands*
 /inkling <question>
 /nemotron <question>
 /ai <question> - tries several free models
+*Party*
+/wyr - would you rather
+/truth - truth question
+/dare - dare
+/tictactoe - play against the bot (then /move <1-9>)
+/roast @person - friendly roast
+/compliment @person - nice compliment
+/ship @a @b - love meter
+/poll Question | option 1 | option 2
+
+*Tools*
+/weather <city>
+/translate <language> <text>
 *Other*
 /time - current time
 /music <song> - search links for a song
@@ -122,6 +135,72 @@ async function askAI(model, keyName, question) {
   const out = data.choices?.[0]?.message?.content?.trim();
   return out ? out.slice(0, 3500) : "The AI sent an empty answer. Try again.";
 }
+const AI_MODELS = [
+  "baidu/ernie-5.5-flash-preview:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "openrouter/free",
+];
+
+const wyrList = [
+  "Would you rather always be 10 minutes late or always be 20 minutes early?",
+  "Would you rather have unlimited free food or unlimited free travel?",
+  "Would you rather be able to fly or be invisible?",
+  "Would you rather speak every language or play every instrument?",
+  "Would you rather live without music or without movies?",
+  "Would you rather have a rewind button or a pause button for your life?",
+  "Would you rather be famous but broke or rich but unknown?",
+  "Would you rather never use social media again or never watch videos again?",
+];
+
+const truthList = [
+  "What's the most embarrassing thing you've done in public?",
+  "What's a food you secretly hate that everyone else loves?",
+  "What's the last lie you told?",
+  "What's your most unpopular opinion?",
+  "What's the silliest thing you're afraid of?",
+  "What's the worst gift you've ever received?",
+  "What song do you secretly love but never admit to?",
+];
+
+const dareList = [
+  "Send a voice note singing the first song that comes to mind.",
+  "Describe your whole day using only emojis.",
+  "Type with your eyes closed and send whatever comes out.",
+  "Speak in rhymes for your next 5 messages.",
+  "Send a voice note saying a tongue twister three times fast.",
+  "Share your most-used emoji and explain why.",
+  "Compliment everyone who sent a message in the last 10 minutes.",
+];
+
+const tttGames = new Map();
+const tttLines = [
+  [0, 1, 2], [3, 4, 5], [6, 7, 8],
+  [0, 3, 6], [1, 4, 7], [2, 5, 8],
+  [0, 4, 8], [2, 4, 6],
+];
+const tttWinner = (b) => {
+  for (const [a, c, d] of tttLines) {
+    if (b[a] && b[a] === b[c] && b[a] === b[d]) return b[a];
+  }
+  return null;
+};
+const tttShow = (b) => {
+  const nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"];
+  const cell = (i) => (b[i] === "X" ? "❌" : b[i] === "O" ? "⭕" : nums[i]);
+  return [0, 3, 6].map((r) => cell(r) + cell(r + 1) + cell(r + 2)).join("\n");
+};
+const tttBotMove = (b) => {
+  const free = b.map((v, i) => (v ? null : i)).filter((i) => i !== null);
+  for (const mark of ["O", "X"]) {
+    for (const i of free) {
+      const t = [...b];
+      t[i] = mark;
+      if (tttWinner(t)) return i;
+    }
+  }
+  if (free.includes(4)) return 4;
+  return pick(free);
+};
 const guessGames = new Map();
 const triviaGames = new Map();
 
@@ -174,6 +253,129 @@ async function handle(sock, msg) {
         return reply("AI request failed. Try again later.");
       }
     }  
+   case "/wyr":
+      return reply(`🤔 ${pick(wyrList)}`);
+    case "/truth":
+      return reply(`🫣 Truth: ${pick(truthList)}`);
+    case "/dare":
+      return reply(`😈 Dare: ${pick(dareList)}`);
+    case "/tictactoe": {
+      const b = Array(9).fill(null);
+      tttGames.set(jid, b);
+      return reply(`${tttShow(b)}\n\nYou are ❌. Play with /move <1-9>`);
+    }
+    case "/move": {
+      const b = tttGames.get(jid);
+      if (!b) return reply("No game running. Start one with /tictactoe");
+      const n = parseInt(args[0], 10);
+      if (!(n >= 1 && n <= 9) || b[n - 1])
+        return reply("Pick a free square from 1 to 9, e.g. /move 5");
+      b[n - 1] = "X";
+      if (tttWinner(b)) {
+        tttGames.delete(jid);
+        return reply(`${tttShow(b)}\n\n🎉 You win!`);
+      }
+      if (b.every(Boolean)) {
+        tttGames.delete(jid);
+        return reply(`${tttShow(b)}\n\nIt's a draw!`);
+      }
+      b[tttBotMove(b)] = "O";
+      if (tttWinner(b)) {
+        tttGames.delete(jid);
+        return reply(`${tttShow(b)}\n\n😎 I win!`);
+      }
+      if (b.every(Boolean)) {
+        tttGames.delete(jid);
+        return reply(`${tttShow(b)}\n\nIt's a draw!`);
+      }
+      return reply(`${tttShow(b)}\n\nYour move: /move <1-9>`);
+    }
+    case "/roast":
+    case "/compliment": {
+      const who =
+        msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+      const label = who ? `@${who.split("@")[0]}` : args.join(" ");
+      if (!label) return reply(`Usage: ${cmd} @person`);
+      const prompt =
+        cmd === "/roast"
+          ? "Write a short, friendly, funny roast (2 sentences) of a friend. Keep it harmless: no jokes about family, looks, religion, race, health or anything hurtful."
+          : "Write a short, warm, funny compliment (2 sentences) for a friend.";
+      try {
+        const out = await askAI(AI_MODELS, "LING_KEY", prompt);
+        return sock.sendMessage(
+          jid,
+          { text: `${label} ${out}`, mentions: who ? [who] : [] },
+          { quoted: msg }
+        );
+      } catch (e) {
+        console.error("AI error:", e.message);
+        return reply("AI request failed. Try again later.");
+      }
+    }
+    case "/ship": {
+      const m =
+        msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
+      if (m.length < 2) return reply("Usage: /ship @person1 @person2");
+      const pct = Math.floor(Math.random() * 101);
+      const hearts = Math.round(pct / 10);
+      const bar = "❤️".repeat(hearts) + "🖤".repeat(10 - hearts);
+      return sock.sendMessage(
+        jid,
+        {
+          text: `💘 @${m[0].split("@")[0]} + @${m[1].split("@")[0]}\n${bar}\nMatch: ${pct}%`,
+          mentions: m.slice(0, 2),
+        },
+        { quoted: msg }
+      );
+    }
+    case "/poll": {
+      const items = text
+        .slice(cmd.length)
+        .split("|")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (items.length < 3 || items.length > 13)
+        return reply("Usage: /poll Question | option 1 | option 2");
+      return sock.sendMessage(jid, {
+        poll: { name: items[0], values: items.slice(1), selectableCount: 1 },
+      });
+    }
+    case "/weather": {
+      const city = args.join(" ");
+      if (!city) return reply("Usage: /weather <city>");
+      try {
+        const url = `https://wttr.in/${encodeURIComponent(city)}?format=%l:+%c+%t+(feels+like+%f),+humidity+%h,+wind+%w`;
+        const res = await fetch(url, {
+          headers: { "User-Agent": "curl/8.0" },
+          signal: AbortSignal.timeout(20000),
+        });
+        const out = (await res.text()).trim();
+        if (!res.ok || !out || out.length > 300 || out.startsWith("Unknown"))
+          return reply("Couldn't find that place.");
+        return reply(`🌤️ ${out}`);
+      } catch (e) {
+        console.error("Weather error:", e.message);
+        return reply("Weather lookup failed. Try again later.");
+      }
+    }
+    case "/translate": {
+      const lang = args[0];
+      const t = args.slice(1).join(" ");
+      if (!lang || !t)
+        return reply("Usage: /translate <language> <text>\nExample: /translate bengali how are you");
+      try {
+        return reply(
+          await askAI(
+            AI_MODELS,
+            "LING_KEY",
+            `Translate the text below into ${lang}. Reply with only the translation.\n\n${t}`
+          )
+        );
+      } catch (e) {
+        console.error("AI error:", e.message);
+        return reply("Translation failed. Try again later.");
+      }
+    }
     case "/hello":
       return reply("Hello!");
     case "/ping":
