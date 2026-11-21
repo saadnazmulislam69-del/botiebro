@@ -106,6 +106,21 @@ const helpText = `*Bot commands*
 /fa <country> - answer
 /flagskip - reveal and skip
 /flagscore - leaderboard
+*Coins & games*
+/balance - your coins (or /balance @person)
+/daily - free daily coins
+/rank - richest players
+/give @person <amount> - send coins
+/coinbet <amount> <heads|tails>
+/slots <amount>
+/dicebet <amount> <1-6>
+
+*Group tools*
+/count - message leaderboard
+/kick @person - admins only
+/groupadminonly on|off - admins only
+/botadminonly on|off - bot admin only
+/admin - bot admin info
 *Other*
 /time - current time
 /music <song> - search links for a song
@@ -249,6 +264,80 @@ const flagNext = (jid) => {
   flagGames.set(jid, c);
   return `${flagEmoji(c[0])}\nWhich country is this flag?\nAnswer with /fa <country>`;
 };
+const OWNER_INFO = `*Bot admin*
+👤 Nazmul Islam Saad
+📸 Instagram: https://www.instagram.com/nazmulislamsaad?fqnt=MXBrNXZ0bnJ3ZDhqNQ==
+📘 Facebook: https://www.facebook.com/profile.php?id=61596590280561`;
+
+const OWNERS = (process.env.OWNER_NUMBER || "")
+  .split(",")
+  .map((s) => s.replace(/\D/g, ""))
+  .filter(Boolean);
+
+const num = (id) => (id || "").split("@")[0].split(":")[0];
+const senderJid = (msg) => msg.key.participant || msg.key.remoteJid;
+const fmt = (n) => n.toLocaleString("en-US");
+
+const isOwner = (msg) =>
+  [
+    msg.key.participant,
+    msg.key.participantAlt,
+    msg.key.remoteJid,
+    msg.key.remoteJidAlt,
+  ]
+    .filter(Boolean)
+    .map(num)
+    .some((n) => OWNERS.includes(n));
+
+const idsOf = (p) => [p.id, p.lid, p.phoneNumber].filter(Boolean).map(num);
+
+const isGroupAdmin = async (sock, jid, msg) => {
+  const meta = await sock.groupMetadata(jid);
+  const mine = [msg.key.participant, msg.key.participantAlt]
+    .filter(Boolean)
+    .map(num);
+  return meta.participants.some(
+    (p) => p.admin && idsOf(p).some((n) => mine.includes(n))
+  );
+};
+
+let botAdminOnly = false;
+const groupAdminOnly = new Set();
+
+const msgCounts = new Map();
+const countMessage = (jid, msg) => {
+  if (msg.message.protocolMessage) return;
+  const who = msg.key.participant;
+  if (!who) return;
+  if (!msgCounts.has(jid)) msgCounts.set(jid, new Map());
+  const g = msgCounts.get(jid);
+  const e = g.get(num(who)) || { jid: who, n: 0 };
+  e.jid = who;
+  e.n += 1;
+  g.set(num(who), e);
+};
+
+const START_COINS = 1000;
+const DAILY_COINS = 500;
+const wallets = new Map();
+const wallet = (jid) => {
+  const k = num(jid);
+  if (!wallets.has(k)) wallets.set(k, { jid, coins: START_COINS, last: 0 });
+  const w = wallets.get(k);
+  w.jid = jid;
+  return w;
+};
+
+const parseBet = (arg, w) => {
+  if (!arg) return { err: "Enter a bet amount, e.g. 100 (or 'all')." };
+  const bet = arg.toLowerCase() === "all" ? w.coins : parseInt(arg, 10);
+  if (!Number.isInteger(bet) || bet < 1)
+    return { err: "Bet must be a whole number of at least 1. Try /daily for free coins." };
+  if (bet > w.coins) return { err: `You only have ${fmt(w.coins)} 🪙.` };
+  return { bet };
+};
+
+const slotSymbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"];
 const guessGames = new Map();
 const triviaGames = new Map();
 
@@ -261,10 +350,23 @@ async function handle(sock, msg) {
   const parts = text.trim().split(/\s+/);
   const cmd = (parts[0] || "").toLowerCase();
   const args = parts.slice(1);
+  if (isGroup) countMessage(jid, msg);
   if (!cmd.startsWith("/")) return;
   console.log("MSG:", jid, text);
 
   const reply = (t) => sock.sendMessage(jid, { text: t }, { quoted: msg });
+  if (cmd !== "/botadminonly" && cmd !== "/groupadminonly") {
+    const owner = isOwner(msg);
+    if (botAdminOnly && !owner)
+      return reply("🔒 The bot is in bot-admin-only mode right now.");
+    if (
+      isGroup &&
+      groupAdminOnly.has(jid) &&
+      !owner &&
+      !(await isGroupAdmin(sock, jid, msg))
+    )
+      return reply("🔒 Only group admins can use the bot in this group right now.");
+  }
 
   switch (cmd) {
   case "/gemma":
@@ -468,6 +570,232 @@ async function handle(sock, msg) {
         },
         { quoted: msg }
       );
+    }
+    case "/admin":
+    case "/owner":
+      return reply(OWNER_INFO);
+    case "/myid": {
+      const ids = [
+        msg.key.participant,
+        msg.key.participantAlt,
+        msg.key.remoteJid,
+        msg.key.remoteJidAlt,
+      ].filter(Boolean);
+      return reply(
+        `Your IDs:\n${ids.join("\n")}\nBot admin: ${isOwner(msg) ? "yes" : "no"}`
+      );
+    }
+    case "/count": {
+      if (!isGroup) return reply("This only works in groups.");
+      const g = msgCounts.get(jid);
+      if (!g || !g.size)
+        return reply("No messages counted yet. I count from the moment I start.");
+      const who = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+      if (who) {
+        const e = g.get(num(who));
+        return sock.sendMessage(
+          jid,
+          {
+            text: `@${num(who)} has sent ${e ? e.n : 0} messages since I started counting.`,
+            mentions: [who],
+          },
+          { quoted: msg }
+        );
+      }
+      const top = [...g.values()].sort((a, b) => b.n - a.n).slice(0, 10);
+      const total = [...g.values()].reduce((s, e) => s + e.n, 0);
+      const list = top
+        .map((e, i) => `${i + 1}. @${num(e.jid)} - ${e.n}`)
+        .join("\n");
+      return sock.sendMessage(
+        jid,
+        {
+          text: `📊 *Message count* (total ${total})\n${list}`,
+          mentions: top.map((e) => e.jid),
+        },
+        { quoted: msg }
+      );
+    }
+    case "/kick": {
+      if (!isGroup) return reply("This only works in groups.");
+      if (!isOwner(msg) && !(await isGroupAdmin(sock, jid, msg)))
+        return reply("Only group admins can use /kick.");
+      const ctx = msg.message.extendedTextMessage?.contextInfo;
+      const target = ctx?.mentionedJid?.[0] || ctx?.participant;
+      if (!target)
+        return reply("Usage: /kick @person (or reply to their message with /kick)");
+      const meta = await sock.groupMetadata(jid);
+      const p = meta.participants.find((x) => idsOf(x).includes(num(target)));
+      if (!p) return reply("That person isn't in this group.");
+      const botIds = [sock.user?.id, sock.user?.lid].filter(Boolean).map(num);
+      if (idsOf(p).some((n) => botIds.includes(n)))
+        return reply("I can't kick myself 😅");
+      if (p.admin)
+        return reply("I won't kick an admin. Remove their admin role first.");
+      try {
+        const res = await sock.groupParticipantsUpdate(jid, [p.id], "remove");
+        if (res?.[0]?.status && res[0].status !== "200")
+          return reply("I couldn't remove them. Make sure I'm a group admin.");
+        return sock.sendMessage(jid, {
+          text: `👋 @${num(p.id)} was removed.`,
+          mentions: [p.id],
+        });
+      } catch (e) {
+        console.error("Kick error:", e.message);
+        return reply("I couldn't remove them. Make sure I'm a group admin.");
+      }
+    }
+    case "/botadminonly": {
+      if (!isOwner(msg)) return reply("Only the bot admin can use this.");
+      const v = (args[0] || "").toLowerCase();
+      if (v !== "on" && v !== "off")
+        return reply(
+          `Bot-admin-only is ${botAdminOnly ? "ON" : "OFF"}. Use /botadminonly on or off`
+        );
+      botAdminOnly = v === "on";
+      return reply(
+        `🔒 Bot-admin-only is now ${botAdminOnly ? "ON: only you can use the bot" : "OFF"}.`
+      );
+    }
+    case "/groupadminonly": {
+      if (!isGroup) return reply("This only works in groups.");
+      if (!isOwner(msg) && !(await isGroupAdmin(sock, jid, msg)))
+        return reply("Only group admins can use this.");
+      const v = (args[0] || "").toLowerCase();
+      if (v !== "on" && v !== "off")
+        return reply(
+          `Group-admin-only is ${groupAdminOnly.has(jid) ? "ON" : "OFF"}. Use /groupadminonly on or off`
+        );
+      if (v === "on") groupAdminOnly.add(jid);
+      else groupAdminOnly.delete(jid);
+      return reply(
+        `🔒 Group-admin-only is now ${v === "on" ? "ON: only group admins can use the bot here" : "OFF"}.`
+      );
+    }
+    case "/balance":
+    case "/bal": {
+      const target =
+        msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
+        senderJid(msg);
+      const w = wallet(target);
+      return sock.sendMessage(
+        jid,
+        { text: `💰 @${num(target)} has ${fmt(w.coins)} 🪙`, mentions: [target] },
+        { quoted: msg }
+      );
+    }
+    case "/daily": {
+      const w = wallet(senderJid(msg));
+      const left = w.last + 24 * 60 * 60 * 1000 - Date.now();
+      if (left > 0) {
+        const h = Math.floor(left / 3600000);
+        const mn = Math.floor((left % 3600000) / 60000);
+        return reply(`⏳ Come back in ${h}h ${mn}m for your next daily reward.`);
+      }
+      w.coins += DAILY_COINS;
+      w.last = Date.now();
+      return reply(`🎁 You got ${fmt(DAILY_COINS)} 🪙!\nBalance: ${fmt(w.coins)} 🪙`);
+    }
+    case "/rank":
+    case "/top": {
+      const top = [...wallets.values()]
+        .sort((a, b) => b.coins - a.coins)
+        .slice(0, 10);
+      if (!top.length) return reply("No players yet. Try /balance or /daily");
+      const list = top
+        .map((w, i) => `${i + 1}. @${num(w.jid)} - ${fmt(w.coins)} 🪙`)
+        .join("\n");
+      return sock.sendMessage(
+        jid,
+        { text: `🏆 *Richest players*\n${list}`, mentions: top.map((w) => w.jid) },
+        { quoted: msg }
+      );
+    }
+    case "/give": {
+      const to = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+      const amt = parseInt(args.find((a) => /^\d+$/.test(a)), 10);
+      if (!to || !amt || amt < 1) return reply("Usage: /give @person <amount>");
+      const from = senderJid(msg);
+      if (num(to) === num(from))
+        return reply("You can't give coins to yourself.");
+      const a = wallet(from);
+      if (amt > a.coins) return reply(`You only have ${fmt(a.coins)} 🪙.`);
+      a.coins -= amt;
+      wallet(to).coins += amt;
+      return sock.sendMessage(
+        jid,
+        {
+          text: `🤝 @${num(from)} gave ${fmt(amt)} 🪙 to @${num(to)}`,
+          mentions: [from, to],
+        },
+        { quoted: msg }
+      );
+    }
+    case "/addcoins": {
+      if (!isOwner(msg)) return reply("Only the bot admin can use this.");
+      const to = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+      const amt = parseInt(args.find((a) => /^\d+$/.test(a)), 10);
+      if (!to || !amt || amt < 1) return reply("Usage: /addcoins @person <amount>");
+      const w = wallet(to);
+      w.coins += amt;
+      return sock.sendMessage(
+        jid,
+        {
+          text: `✅ Added ${fmt(amt)} 🪙 to @${num(to)}. New balance: ${fmt(w.coins)} 🪙`,
+          mentions: [to],
+        },
+        { quoted: msg }
+      );
+    }
+    case "/coinbet": {
+      const w = wallet(senderJid(msg));
+      const s = (args[1] || "").toLowerCase();
+      const side = s.startsWith("h") ? "heads" : s.startsWith("t") ? "tails" : null;
+      if (!side) return reply("Usage: /coinbet <amount> <heads|tails>");
+      const b = parseBet(args[0], w);
+      if (b.err) return reply(b.err);
+      const flip = Math.random() < 0.5 ? "heads" : "tails";
+      if (flip === side) {
+        w.coins += b.bet;
+        return reply(`🪙 ${flip}! You won ${fmt(b.bet)} 🪙\nBalance: ${fmt(w.coins)} 🪙`);
+      }
+      w.coins -= b.bet;
+      return reply(`🪙 ${flip}. You lost ${fmt(b.bet)} 🪙\nBalance: ${fmt(w.coins)} 🪙`);
+    }
+    case "/slots": {
+      const w = wallet(senderJid(msg));
+      const b = parseBet(args[0], w);
+      if (b.err) return reply(b.err);
+      const r = [pick(slotSymbols), pick(slotSymbols), pick(slotSymbols)];
+      const uniq = new Set(r).size;
+      let net = -b.bet;
+      let label = "No match";
+      if (uniq === 1) {
+        net = b.bet * 10;
+        label = "JACKPOT!";
+      } else if (uniq === 2) {
+        net = Math.floor(b.bet / 2);
+        label = "Two of a kind";
+      }
+      w.coins += net;
+      return reply(
+        `🎰 ${r.join(" ")}\n${label} ${net >= 0 ? "+" : ""}${fmt(net)} 🪙\nBalance: ${fmt(w.coins)} 🪙`
+      );
+    }
+    case "/dicebet": {
+      const w = wallet(senderJid(msg));
+      const guess = parseInt(args[1], 10);
+      if (!(guess >= 1 && guess <= 6))
+        return reply("Usage: /dicebet <amount> <1-6>");
+      const b = parseBet(args[0], w);
+      if (b.err) return reply(b.err);
+      const roll = Math.floor(Math.random() * 6) + 1;
+      if (roll === guess) {
+        w.coins += b.bet * 5;
+        return reply(`🎲 ${roll}! You won ${fmt(b.bet * 5)} 🪙\nBalance: ${fmt(w.coins)} 🪙`);
+      }
+      w.coins -= b.bet;
+      return reply(`🎲 ${roll}. You lost ${fmt(b.bet)} 🪙\nBalance: ${fmt(w.coins)} 🪙`);
     }
     case "/hello":
       return reply("Hello!");
