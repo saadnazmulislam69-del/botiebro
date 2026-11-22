@@ -121,6 +121,12 @@ const helpText = `*Bot commands*
 /groupadminonly on|off - admins only
 /botadminonly on|off - bot admin only
 /admin - bot admin info
+*Voice & people*
+/say <code> <text> - bot speaks (e.g. /say bn ...)
+/saytr <code> <text> - translate, then speak
+/saylangs - language codes
+/pfp @person - profile picture
+/add <number> - add to group (admins)
 *Other*
 /time - current time
 /music <song> - search links for a song
@@ -338,6 +344,37 @@ const parseBet = (arg, w) => {
 };
 
 const slotSymbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"];
+const TTS_LANGS = {
+  en: "English", bn: "Bengali", hi: "Hindi", ur: "Urdu", ar: "Arabic",
+  ne: "Nepali", ta: "Tamil", te: "Telugu", ml: "Malayalam", mr: "Marathi",
+  gu: "Gujarati", si: "Sinhala", id: "Indonesian", ms: "Malay", th: "Thai",
+  vi: "Vietnamese", "zh-CN": "Chinese", ja: "Japanese", ko: "Korean",
+  tr: "Turkish", es: "Spanish", fr: "French", de: "German", it: "Italian",
+  pt: "Portuguese", ru: "Russian", nl: "Dutch", pl: "Polish",
+  sv: "Swedish", el: "Greek",
+};
+
+const ttsLang = (c) =>
+  Object.keys(TTS_LANGS).find((k) => k.toLowerCase() === c.toLowerCase());
+
+const ttsGoogle = async (text, lang) => {
+  const parts = text.match(/[\s\S]{1,180}(?:\s|$)|[\s\S]{1,180}/g) || [];
+  const bufs = [];
+  for (const p of parts) {
+    if (!p.trim()) continue;
+    const url =
+      "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob" +
+      `&tl=${encodeURIComponent(lang)}&q=${encodeURIComponent(p.trim())}`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`TTS HTTP ${res.status}`);
+    bufs.push(Buffer.from(await res.arrayBuffer()));
+  }
+  if (!bufs.length) throw new Error("No audio");
+  return Buffer.concat(bufs);
+};
 const guessGames = new Map();
 const triviaGames = new Map();
 
@@ -796,6 +833,106 @@ async function handle(sock, msg) {
       }
       w.coins -= b.bet;
       return reply(`🎲 ${roll}. You lost ${fmt(b.bet)} 🪙\nBalance: ${fmt(w.coins)} 🪙`);
+    }
+   case "/add": {
+      if (!isGroup) return reply("This only works in groups.");
+      if (!isOwner(msg) && !(await isGroupAdmin(sock, jid, msg)))
+        return reply("Only group admins can use /add.");
+      const numbers = args
+        .join(" ")
+        .split(",")
+        .map((s) => s.replace(/\D/g, ""))
+        .filter((n) => n.length >= 8 && n.length <= 15)
+        .slice(0, 5);
+      if (!numbers.length)
+        return reply(
+          "Usage: /add <number with country code>\nExample: /add 8801XXXXXXXXX\nSeveral numbers: separate them with commas."
+        );
+      const lines = [];
+      for (const n of numbers) {
+        try {
+          const res = await sock.groupParticipantsUpdate(
+            jid,
+            [`${n}@s.whatsapp.net`],
+            "add"
+          );
+          const st = String(res?.[0]?.status || "");
+          if (st === "200") lines.push(`✅ ${n} added`);
+          else if (st === "409") lines.push(`ℹ️ ${n} is already in the group`);
+          else if (st === "403")
+            lines.push(`🔒 ${n} can't be added (their privacy settings need an invite link)`);
+          else if (st === "408")
+            lines.push(`⏳ ${n} left recently and can't be re-added yet`);
+          else lines.push(`❌ ${n} couldn't be added (not on WhatsApp, or error ${st})`);
+        } catch (e) {
+          console.error("Add error:", e.message);
+          lines.push(`❌ ${n} failed. Make sure I'm a group admin.`);
+        }
+      }
+      return reply(lines.join("\n"));
+    }
+    case "/pfp": {
+      const ctx = msg.message.extendedTextMessage?.contextInfo;
+      let target = ctx?.mentionedJid?.[0] || ctx?.participant;
+      const n = args.join("").replace(/\D/g, "");
+      if (!target && n.length >= 8) target = `${n}@s.whatsapp.net`;
+      if (!target) target = senderJid(msg);
+      try {
+        const url = await sock.profilePictureUrl(target, "image");
+        return sock.sendMessage(
+          jid,
+          {
+            image: { url },
+            caption: `Profile picture of @${num(target)}`,
+            mentions: [target],
+          },
+          { quoted: msg }
+        );
+      } catch (e) {
+        return reply(
+          "I couldn't get that profile picture. It may be hidden by their privacy settings, or not set."
+        );
+      }
+    }
+    case "/saylangs":
+      return reply(
+        `*Language codes for /say*\n${Object.entries(TTS_LANGS)
+          .map(([c, name]) => `${c} - ${name}`)
+          .join("\n")}`
+      );
+    case "/say":
+    case "/saytr": {
+      let lang = "en";
+      let t = args.join(" ");
+      const code = ttsLang(args[0] || "");
+      if (code) {
+        lang = code;
+        t = args.slice(1).join(" ");
+      }
+      if (!t)
+        return reply(
+          "Usage: /say <language code> <text>\nExample: /say bn আমি ভালো আছি\nUse /saytr to translate first: /saytr bn how are you\nAll codes: /saylangs"
+        );
+      if (t.length > 500)
+        return reply("Text is too long. Keep it under 500 characters.");
+      try {
+        if (cmd === "/saytr") {
+          t = await askAI(
+            AI_MODELS,
+            "LING_KEY",
+            `Translate the text below into ${TTS_LANGS[lang]}. Reply with only the translation.\n\n${t}`
+          );
+        }
+        const audio = await ttsGoogle(t.slice(0, 500), lang);
+        return sock.sendMessage(
+          jid,
+          { audio, mimetype: "audio/mpeg" },
+          { quoted: msg }
+        );
+      } catch (e) {
+        console.error("Say error:", e.message);
+        return reply("Voice failed. Try again later.");
+      }
     }
     case "/hello":
       return reply("Hello!");
