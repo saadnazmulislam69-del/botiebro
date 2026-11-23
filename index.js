@@ -2,8 +2,10 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
+import sharp from "sharp";
 import http from "http";
 
 http
@@ -383,7 +385,11 @@ async function handle(sock, msg) {
   const jid = msg.key.remoteJid;
   const isGroup = jid.endsWith("@g.us");
   const text =
-    msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+      const text =
+    msg.message.conversation ||
+    msg.message.extendedTextMessage?.text ||
+    msg.message.imageMessage?.caption ||
+    "";
   const parts = text.trim().split(/\s+/);
   const cmd = (parts[0] || "").toLowerCase();
   const args = parts.slice(1);
