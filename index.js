@@ -377,6 +377,74 @@ const ttsGoogle = async (text, lang) => {
   if (!bufs.length) throw new Error("No audio");
   return Buffer.concat(bufs);
 };
+const editEffects = [
+  "gray", "sepia", "blur", "sharpen", "invert", "flip", "mirror",
+  "rotate", "bright", "dark", "vivid", "pixel", "resize",
+];
+const editHelp =
+  "Reply to a photo with /edit <effect>, or send a photo with /edit <effect> as its caption.\n\nEffects: gray, sepia, blur [1-50], sharpen, invert, flip, mirror, rotate [degrees], bright [0.3-2.5], dark, vivid, pixel [2-100], resize [width]\n\nExample: /edit blur 10";
+
+const getImage = async (sock, msg) => {
+  const ctx = msg.message.extendedTextMessage?.contextInfo;
+  let src = null;
+  if (msg.message.imageMessage) src = msg;
+  else if (ctx?.quotedMessage?.imageMessage)
+    src = {
+      key: {
+        remoteJid: msg.key.remoteJid,
+        id: ctx.stanzaId,
+        participant: ctx.participant,
+      },
+      message: ctx.quotedMessage,
+    };
+  if (!src) return null;
+  return downloadMediaMessage(
+    src,
+    "buffer",
+    {},
+    {
+      logger: pino({ level: "silent" }),
+      reuploadRequest: sock.updateMediaMessage,
+    }
+  );
+};
+
+const editImage = async (buf, effect, val) => {
+  const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
+  let img = sharp(buf);
+  if (effect === "gray") img = img.grayscale();
+  else if (effect === "sepia")
+    img = img.grayscale().tint({ r: 112, g: 66, b: 20 });
+  else if (effect === "blur") img = img.blur(clamp(val || 6, 1, 50));
+  else if (effect === "sharpen") img = img.sharpen({ sigma: 2 });
+  else if (effect === "invert") img = img.negate();
+  else if (effect === "flip") img = img.flip();
+  else if (effect === "mirror") img = img.flop();
+  else if (effect === "rotate") img = img.rotate(val || 90);
+  else if (effect === "bright")
+    img = img.modulate({ brightness: clamp(val || 1.3, 0.3, 2.5) });
+  else if (effect === "dark") img = img.modulate({ brightness: 0.7 });
+  else if (effect === "vivid") img = img.modulate({ saturation: 1.8 });
+  else if (effect === "resize")
+    img = img.resize({ width: clamp(val || 512, 16, 2000) });
+  else if (effect === "pixel") {
+    const { width, height } = await sharp(buf).metadata();
+    const small = await sharp(buf)
+      .resize({ width: Math.max(8, Math.round(width / clamp(val || 16, 2, 100))) })
+      .toBuffer();
+    img = sharp(small).resize(width, height, { kernel: "nearest" });
+  } else return null;
+  return img.jpeg({ quality: 90 }).toBuffer();
+};
+
+const makeSticker = (buf) =>
+  sharp(buf)
+    .resize(512, 512, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .webp()
+    .toBuffer();
 const guessGames = new Map();
 const triviaGames = new Map();
 
