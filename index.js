@@ -129,6 +129,9 @@ const helpText = `*Bot commands*
 /saylangs - language codes
 /pfp @person - profile picture
 /add <number> - add to group (admins)
+*Photos*
+/edit <effect> - edit a photo (reply to it, or use as its caption)
+/sticker - turn a photo into a sticker
 *Other*
 /time - current time
 /music <song> - search links for a song
@@ -1008,6 +1011,35 @@ async function handle(sock, msg) {
         return reply("Voice failed. Try again later.");
       }
     }
+        case "/edit": {
+      const effect = (args[0] || "").toLowerCase();
+      if (!editEffects.includes(effect)) return reply(editHelp);
+      try {
+        const buf = await getImage(sock, msg);
+        if (!buf) return reply(editHelp);
+        const out = await editImage(buf, effect, parseFloat(args[1]));
+        return sock.sendMessage(
+          jid,
+          { image: out, caption: `✨ ${effect}` },
+          { quoted: msg }
+        );
+      } catch (e) {
+        console.error("Edit error:", e.message);
+        return reply("I couldn't edit that photo. Try another one.");
+      }
+    }
+    case "/sticker": {
+      try {
+        const buf = await getImage(sock, msg);
+        if (!buf)
+          return reply("Reply to a photo with /sticker, or send a photo with /sticker as its caption.");
+        const sticker = await makeSticker(buf);
+        return sock.sendMessage(jid, { sticker }, { quoted: msg });
+      } catch (e) {
+        console.error("Sticker error:", e.message);
+        return reply("I couldn't make a sticker from that. Try another photo.");
+      }
+      }
     case "/hello":
       return reply("Hello!");
     case "/ping":
