@@ -456,7 +456,6 @@ async function handle(sock, msg) {
   const jid = msg.key.remoteJid;
   const isGroup = jid.endsWith("@g.us");
   const text =
-      const text =
     msg.message.conversation ||
     msg.message.extendedTextMessage?.text ||
     msg.message.imageMessage?.caption ||
